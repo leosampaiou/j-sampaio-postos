@@ -1,0 +1,64 @@
+# Plano de implementação — J Sampaio Postos | Sistema de Gestão de Fechamentos
+
+## Objetivo e abordagem
+
+Construir uma aplicação web responsiva e instalável para substituir o controle físico de vendas do J Sampaio Postos. A aplicação será operacional, e não uma demonstração com dados simulados: leituras, totais, indicadores, relatórios e PDFs deverão derivar dos dados persistidos. Quando não houver dados reais, a interface mostrará estado vazio/zero, sem inventar faturamento ou usuários.
+
+A base provisionada é o template real `web-db-user`: React 19, TypeScript, Vite, Tailwind 4, Express, tRPC, Drizzle ORM e MySQL gerenciado. O projeto já possui `client/`, `server/`, `drizzle/`, `shared/`, scripts `pnpm check`, `pnpm test`, `pnpm build` e porta 3000. Servidor e banco foram selecionados porque o escopo exige autenticação, validação no servidor e persistência entre dispositivos. O banco é compartilhado entre Preview e publicação; migrações serão aditivas e nenhuma massa financeira falsa será inserida.
+
+O documento anexado pede contas individuais por nome de usuário e senha; portanto, a autenticação da aplicação será própria, com senha protegida por hash criptográfico, sessão opaca em cookie `httpOnly`/`Secure`, expiração/revogação e autorização nos procedimentos tRPC do servidor. Não haverá cadastro público irrestrito: administradores gerenciarão contas, e o provisionamento inicial do primeiro administrador será um fluxo de configuração controlado, sem credenciais padrão embutidas no código. A política exata para ativar esse primeiro administrador poderá ser definida na etapa de configuração.
+
+## Escopo funcional
+
+1. **Acesso e permissões:** perfis frentista, gerente e administrador; login/logout individual; proteção de rotas e operações no backend; associação de usuários, funcionários e unidade; contas ativas/inativas. Frentistas acessam seus próprios registros; gerentes acessam operação e relatórios gerenciais; administradores controlam usuários, preços, bicos, tolerância, dados empresariais, unidade e políticas.
+2. **Fechamento diário:** fluxo em quatro etapas com data/turno/responsáveis; quatro bicos configurados (01–03 Gasolina Comum e 04 Diesel S10); leituras decimais e validação de leitura final; cálculo de litros e valores usando preço vigente copiado para o fechamento; recebimentos em dinheiro, PIX, débito e crédito; diferença e classificação CONFERIDO/SOBRA/FALTA pela tolerância configurada; observações e confirmações; revisão, rascunho e finalização. Restrição única por data/turno/unidade, exceto reabertura autorizada e auditada. Registros finalizados não serão alterados ou apagados silenciosamente.
+3. **Operação e gestão:** dashboard com filtros de período, indicadores calculados do banco, acompanhamento dos turnos, gráficos de faturamento/combustível/recebimentos/volume/turnos e atalhos; histórico pesquisável e detalhe; relatórios financeiro, combustível, turno, funcionário e divergências; gestão de funcionários e usuários; configurações; trilha de auditoria de correções, reaberturas e mudanças sensíveis.
+4. **Documentos e compartilhamento:** PDF individual e consolidado diário em A4, com a marca oficial e dados empresariais; impressão e exportação de relatórios para Excel. O compartilhamento usará Web Share API com arquivo quando o navegador suportar; caso contrário, baixará o PDF e abrirá o WhatsApp com a mensagem preenchida. A interface informará claramente que o envio depende da ação do usuário, sem simular confirmação de envio.
+5. **PWA e conectividade:** manifest próprio, ícone baseado no arquivo de marca sem redesenho, service worker para shell/recursos compatíveis e interface responsiva. Rascunhos offline poderão ficar temporariamente no armazenamento local do dispositivo para sincronização posterior; não serão tratados como gravação definitiva até confirmação do servidor. Exibir estados offline/sincronizando/sincronizado/falha e evitar duplicação na sincronização.
+6. **Expansão:** modelar registros com `unitId` e preparar entidades de unidades para futura operação multiunidade, mantendo J Sampaio Postos como unidade operacional inicial. Dados empresariais informados no documento-fonte: D ANDRADE SAMPAIO LTDA.; nome fantasia informado POSTO J. SAMPAIO; CNPJ 46.691.152/0001-89; Rua Hildenora Gusmão, 231 – Centro, Vargem Grande/MA, CEP 65430-000.
+
+## Dados e segurança
+
+As tabelas Drizzle/MySQL cobrirão unidades e configurações, usuários/sessões, funcionários, bicos e histórico de preços, fechamentos, leituras por bico, recebimentos, justificativas/reaberturas e eventos de auditoria. O banco aplicará chaves estrangeiras, índices e unicidade por unidade/data/turno; valores monetários serão armazenados em centavos inteiros para evitar erros de ponto flutuante, mantendo cálculos e exibição em formato brasileiro. Regras e permissões serão validadas novamente no servidor; alterações de valores finalizados criarão trilha com autor, horário, justificativa e antes/depois. Credenciais privadas não irão para o bundle frontend.
+
+Os preços e a tolerância vigentes serão configuráveis, mas cada fechamento preservará seus valores aplicados. O estado vazio do banco não será preenchido com exemplos financeiros. O primeiro administrador não terá senha padrão conhecida nem segredo de bootstrap publicado no navegador.
+
+## Organização prevista
+
+- `client/src/pages/`: Dashboard, Login/Configuração inicial, Novo Fechamento, Histórico/Detalhe, Relatórios, Funcionários, Usuários, Configurações e Auditoria.
+- `client/src/components/`: navegação adaptável, marca, cards, filtros, gráficos, tabelas, estados de conectividade e componentes dos passos de fechamento.
+- `client/src/lib/`: cliente tRPC, formatos de moeda/data, cálculos compartilhados, geração de PDF/planilhas e fila local de rascunhos.
+- `client/public/`: logotipo oficial enviado, manifest, ícones derivados e service worker.
+- `server/_core/`: autenticação/sessões, middleware de papéis, contexto, servidor e endpoints HTTP de apoio.
+- `server/routers/` (ou módulos de domínio ligados a `server/routers.ts`): procedimentos validados para fechamentos, dashboard/relatórios, funcionários, usuários, configurações e auditoria.
+- `server/db/` (ou consultas organizadas em `server/db.ts`): operações persistentes e transacionais por domínio.
+- `drizzle/schema.ts` e `drizzle/`: entidades, relações e migrações versionadas.
+- `shared/`: tipos/validações Zod e regras monetárias compartilhadas entre cliente e servidor.
+- `public/manus-routes.json`: manifesto das rotas de páginas mantido em sincronia com o roteador.
+
+## Direção de design
+
+Alternativas consideradas: “ERP financeiro editorial, limpo e operacional” — probabilidade 0,07; “Painel industrial escuro de alto contraste” — probabilidade 0,04; “Administração minimalista baseada em tabelas” — probabilidade 0,03. Escolha: **ERP financeiro editorial, limpo e operacional**, alinhado ao logotipo e às referências do solicitante.
+
+- **Movimento:** design editorial suíço aplicado a um painel financeiro moderno, com hierarquia tipográfica clara e componentes precisos.
+- **Princípios centrais:** números legíveis à primeira vista; fluxo de fechamento curto e sequencial; divergências destacadas sem ambiguidade; rastreabilidade sem aparência de planilha.
+- **Filosofia de cor:** azul-marinho transmite confiança e estrutura; amarelo do logotipo orienta ações e foco; branco e cinza-claro dão espaço e legibilidade; verde, vermelho e laranja comunicam estado sem depender somente da cor.
+- **Paradigma de layout:** navegação lateral persistente no desktop e barra/folha de navegação compacta no celular; conteúdo operacional por seções e resumos alinhados, com tabela em telas amplas e cartões em telas estreitas.
+- **Elementos de assinatura:** filete amarelo para ação primária/contexto ativo; placas de status com rótulo e ícone; totais monetários em tipografia tabular.
+- **Interação e animação:** foco visível, formulários com feedback imediato, revisão antes de finalizar e transições breves (120–180 ms); respeitar `prefers-reduced-motion`.
+- **Tipografia:** Inter ou fonte sans-serif de sistema para interface, com números tabulares; títulos compactos em peso semibold e rótulos de campos curtos.
+- **Essência da marca:** ferramenta de precisão para quem fecha e acompanha os turnos no J Sampaio Postos; personalidade confiável, objetiva e organizada.
+- **Voz:** instruções diretas e tranquilas; CTAs orientados à ação. Exemplos: “Confira os valores antes de finalizar.” “Diferença de R$ 20,00 — registre a justificativa do turno.”
+- **Logotipo:** utilizar o arquivo oficial recebido integralmente, sem redesenhar nem alterar cores, proporções ou elementos; aplicar em login, navegação, documentos e identidade instalável.
+- **Cor proprietária:** azul-marinho do logotipo, acompanhado pelo amarelo original como destaque.
+
+## Restrições e decisões importantes
+
+- A interface não exibirá lançamentos fictícios para preencher gráficos. PDFs e relatórios refletirão registros reais do banco.
+- Compatibilidade com compartilhamento de arquivo depende do navegador/dispositivo; fallback de download + WhatsApp não equivale a envio automático.
+- A exigência do documento menciona Supabase/PostgreSQL como sugestão, mas aceita arquitetura equivalente; será usada a infraestrutura gerenciada provisionada para este projeto (MySQL), com backend, persistência, migrações e autorização no servidor.
+- O texto do requisito de expansão termina truncado no anexo após “Usuários vincula...”; este plano preserva as instruções explícitas disponíveis e prepara `unitId` para usuários e registros.
+
+## Fluxo de entrega
+
+Após aprovação deste plano, converter as cláusulas do documento em `TODO.md` por resultado independente, preservando regras, valores, perfis, estados e exceções; configurar diagnósticos do TypeScript antes da primeira leva de código; implementar primeiro fundação de dados/autenticação e o fluxo de fechamento, depois gestão/dashboard/histórico/relatórios, e por fim documentos/PWA/offline; iniciar o serviço pelo runtime gerenciado; executar verificações disponíveis e revisão read-only do escopo; corrigir problemas confirmados; manter publicação separada do Preview e não publicar sem pedido explícito.
