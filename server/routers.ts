@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { z } from "zod";
+import { businessDateInSaoPaulo } from "../shared/businessDate";
 import {
   appSessions, appUsers, auditEvents, closureNozzles, closurePayments, closures,
   employees, fuelPrices, fuelPumps, unitSettings, units,
@@ -377,19 +378,20 @@ const closuresRouter = router({
 const analyticsRouter = router({
   dashboard: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional()).query(async ({ input, ctx }) => {
     const db = await getDb();
+    const businessToday = businessDateInSaoPaulo();
     const cond = [eq(closures.unitId, ctx.user.unitId), eq(closures.status, "finalizado" as const)];
     if (input?.from) cond.push(gte(closures.closureDate, input.from));
     if (input?.to) cond.push(lte(closures.closureDate, input.to));
     const rows = await db.select().from(closures).where(and(...cond)).orderBy(asc(closures.closureDate));
-    const start = input?.from ?? new Date().toISOString().slice(0, 10);
-    const end = input?.to ?? new Date().toISOString().slice(0, 10);
+    const start = input?.from ?? businessToday;
+    const end = input?.to ?? businessToday;
     const all = rows.filter(r => r.closureDate >= start && r.closureDate <= end);
     const total = (arr: typeof all, key: "salesCents" | "receivedCents") => arr.reduce((sum, r) => sum + r[key], 0);
-    const today = all.filter(r => r.closureDate === new Date().toISOString().slice(0, 10));
+    const today = all.filter(r => r.closureDate === businessToday);
     const nozzles = all.length ? await db.select({ closureId: closureNozzles.closureId, fuelType: closureNozzles.fuelType, liters: closureNozzles.liters, valueCents: closureNozzles.valueCents }).from(closureNozzles).innerJoin(closures, eq(closureNozzles.closureId, closures.id)).where(and(eq(closures.unitId, ctx.user.unitId), eq(closures.status, "finalizado" as const), gte(closures.closureDate, start), lte(closures.closureDate, end))) : [];
     const payments = all.length ? await db.select({ method: closurePayments.method, amountCents: closurePayments.amountCents }).from(closurePayments).innerJoin(closures, eq(closurePayments.closureId, closures.id)).where(and(eq(closures.unitId, ctx.user.unitId), eq(closures.status, "finalizado" as const), gte(closures.closureDate, start), lte(closures.closureDate, end))) : [];
     const shifts = ["manha", "tarde", "noite"] as const;
-    const todayStatuses = await db.select({ shift: closures.shift, status: closures.status, result: closures.result }).from(closures).where(and(eq(closures.unitId, ctx.user.unitId), eq(closures.closureDate, new Date().toISOString().slice(0, 10))));
+    const todayStatuses = await db.select({ shift: closures.shift, status: closures.status, result: closures.result }).from(closures).where(and(eq(closures.unitId, ctx.user.unitId), eq(closures.closureDate, businessToday)));
     const pendingRows = await db.select({ status: closures.status, result: closures.result, differenceCents: closures.differenceCents }).from(closures).where(and(eq(closures.unitId, ctx.user.unitId), gte(closures.closureDate, start), lte(closures.closureDate, end)));
     const byDay = new Map<string, number>();
     all.forEach(r => byDay.set(r.closureDate, (byDay.get(r.closureDate) ?? 0) + r.salesCents));
@@ -399,7 +401,10 @@ const analyticsRouter = router({
     payments.forEach(p => { paymentStats[p.method] += p.amountCents; });
     const todayIds = new Set(today.map(row => row.id));
     const todayLiters = nozzles.filter(nozzle => todayIds.has(nozzle.closureId)).reduce((sum, nozzle) => sum + Number(nozzle.liters), 0);
-    return { totals: { todaySalesCents: total(today, "salesCents"), monthSalesCents: total(all, "salesCents"), todayReceivedCents: total(today, "receivedCents"), monthReceivedCents: total(all, "receivedCents"), monthLiters: fuelStats.gasolina_comum.liters + fuelStats.diesel_s10.liters, todayLiters, finalizedCount: all.length, pendingCount: pendingRows.filter(r => r.status === "aguardando_conferencia" || r.status === "rascunho").length, confirmedCount: all.filter(r => r.result === "conferido").length, discrepancyCount: all.filter(r => r.result === "sobra" || r.result === "falta").length, surplusCents: all.filter(r => r.result === "sobra").reduce((sum, r) => sum + r.differenceCents, 0), shortageCents: Math.abs(all.filter(r => r.result === "falta").reduce((sum, r) => sum + r.differenceCents, 0)) }, byDay: [...byDay].map(([date, salesCents]) => ({ date, salesCents })), fuelStats, paymentStats, shifts: shifts.map(shift => ({ shift, status: todayStatuses.find(s => s.shift === shift)?.status ?? "nao_iniciado", result: todayStatuses.find(s => s.shift === shift)?.result ?? "pendente" })) };
+    const surplusCents = all.filter(r => r.result === "sobra").reduce((sum, r) => sum + r.differenceCents, 0);
+    const shortageCents = Math.abs(all.filter(r => r.result === "falta").reduce((sum, r) => sum + r.differenceCents, 0));
+    const netCashBalanceCents = surplusCents - shortageCents;
+    return { totals: { todaySalesCents: total(today, "salesCents"), monthSalesCents: total(all, "salesCents"), todayReceivedCents: total(today, "receivedCents"), monthReceivedCents: total(all, "receivedCents"), monthLiters: fuelStats.gasolina_comum.liters + fuelStats.diesel_s10.liters, todayLiters, finalizedCount: all.length, pendingCount: pendingRows.filter(r => r.status === "aguardando_conferencia" || r.status === "rascunho").length, confirmedCount: all.filter(r => r.result === "conferido").length, discrepancyCount: all.filter(r => r.result === "sobra" || r.result === "falta").length, surplusCents, shortageCents, netCashBalanceCents }, byDay: [...byDay].map(([date, salesCents]) => ({ date, salesCents })), fuelStats, paymentStats, shifts: shifts.map(shift => ({ shift, status: todayStatuses.find(s => s.shift === shift)?.status ?? "nao_iniciado", result: todayStatuses.find(s => s.shift === shift)?.result ?? "pendente" })) };
   }),
   report: managerProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional() }).optional()).query(async ({ input, ctx }) => {
     const db = await getDb();

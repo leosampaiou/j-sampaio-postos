@@ -115,6 +115,15 @@ Criar cards com os seguintes indicadores:
 
 Todos os indicadores deverão ser calculados automaticamente com base nos registros reais do banco de dados.
 
+### Complemento de indicadores do dashboard — solicitação de 21/11/2026
+
+- Remover completamente do dashboard principal os cards “Recebido hoje”, “Fechamentos realizados” e “Fechamentos pendentes”; essas informações podem continuar nas respectivas páginas e relatórios.
+- Substituir os indicadores separados de sobras e faltas por um único card “Saldo de caixa”, calculado como total de sobras menos total de faltas no período selecionado. Exibir o valor líquido em reais e indicar saldo positivo, negativo ou zerado em verde, vermelho ou cor neutra, respectivamente.
+- Não apagar os registros individuais de sobras e faltas; eles continuam disponíveis no módulo de divergências e nos relatórios.
+- Preservar os demais indicadores financeiros e operacionais não mencionados nesta solicitação.
+- A seção de estoque dos tanques deve permanecer no dashboard principal, imediatamente abaixo dos indicadores financeiros, sem inventar valores.
+- O saldo respeita exatamente o período selecionado: “Hoje” limita o cálculo a hoje e “Mês atual” acumula do primeiro dia do mês até a data atual, sem considerar ocorrências fora do intervalo.
+
 4.2 Gráficos
 
 Criar os seguintes gráficos interativos:
