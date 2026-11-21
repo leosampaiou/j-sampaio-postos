@@ -975,3 +975,54 @@ Preparar a estrutura para permitir:
 
 - Cadastro de novas unidades.
 - Usuários vincula
+
+
+## Evolução mobile, estoque e divergências — solicitação de 21/11/2026
+
+### [ ] Experiência mobile e navegação
+- Reorganizar o dashboard para smartphones: cards adaptados, indicadores em duas colunas quando adequado, gráficos responsivos, textos e valores sem cortes, botões com áreas de toque confortáveis, espaçamentos claros e filtros fáceis de usar.
+- No celular, oferecer navegação inferior para Início, Fechamentos, Estoque, Relatórios e Mais; no desktop, manter a navegação lateral.
+- Revisar os formulários existentes: largura de campo adequada, teclado numérico para valores/leituras, seletores acessíveis, erros legíveis, botões claros, prevenção de envio duplicado e campos importantes não encobertos pelo teclado virtual.
+- No fechamento mobile, mostrar cada bico em card individual em vez de tabela larga; organizar o preenchimento em etapas, destacar cálculos automáticos, facilitar a navegação entre campos e manter as informações essenciais visíveis.
+- Revisar login, dashboard, fechamentos, histórico, relatórios, usuários, configurações e módulos novos em 320, 360, 375, 390, 412 e 430 px, além de tablets e computadores; corrigir sobreposição, rolagem horizontal indevida, botões cortados e texto ilegível.
+
+### [ ] Cadastro de tanques, entradas, saídas, medições e histórico
+- Criar área “Estoque e Tanques” para controle de combustível armazenado, entradas, saídas, quantidade disponível, consumo médio, autonomia e reposição.
+- Administrar tanques com nome/identificação, código, combustível, capacidade total, capacidade operacional, estoque mínimo, estoque inicial, data do último abastecimento e status ativo/inativo. Disponibilizar inicialmente Gasolina Comum e Diesel S10, permitir mais de um tanque por combustível e preparar novos combustíveis para inclusão futura.
+- Registrar entrada com tanque, combustível, fornecedor, número da nota, data/horário, litros, valor total, preço por litro, responsável, observações e comprovante opcional; atualizar o saldo automaticamente, impedir duplicidade e manter o histórico.
+- Ao finalizar um fechamento, gerar saída vinculada ao tanque e aos litros por bico. Se houver mais de um tanque para o mesmo combustível, exigir configuração da origem por bico ou regra de distribuição; não inventar distribuição. Edição, reabertura ou reprocessamento não pode duplicar baixa; cada movimento tem chave única.
+- Calcular estoque teórico = estoque inicial + entradas − saídas − baixas autorizadas. Manter toda movimentação. Baixa extraordinária exige quantidade, motivo, data, responsável e autorização conforme papel; não permitir alteração silenciosa.
+- Registrar medição física com tanque, data/horário, volume, responsável e observações; comparar estoque teórico, físico, diferença em litros e percentual. Não substituir automaticamente o teórico; divergências ficam registradas para investigação e ajuste autorizado.
+- Estimar autonomia usando histórico real de vendas e permitir médias de 7, 15 e 30 dias. Exibir litros disponíveis, média diária, autonomia, data prevista de esgotamento e projeção para os próximos dias. Sem histórico suficiente, indicar baixa confiabilidade; média zero não gera previsão artificial.
+- Alertar estoque abaixo/próximo do mínimo, autonomia menor que 3 ou 2 dias, divergência físico/teórico e tanque sem atualização recente; configurar limites individualmente por tanque e destacar no dashboard.
+- Criar Planejamento de Reposição considerando estoque, capacidade operacional, mínimo, consumo médio, prazo de entrega e reserva de segurança; sugerir quantidade limitada pela capacidade disponível, sem fazer pedidos automaticamente.
+- Histórico de movimentos informa data, tanque, tipo, entrada/saída, quantidade, responsável, documento e saldo resultante; filtros por período, tanque, combustível e tipo. Relatórios incluem estoque atual, entradas, saídas, consumo, média diária, autonomia, diferenças físico/teórico, abastecimentos e custo de aquisição, com exportação PDF e Excel.
+
+### [ ] Estoque dos tanques no dashboard
+- Exibir obrigatoriamente “ESTOQUE DOS TANQUES” logo abaixo dos indicadores financeiros principais, com um card por tanque cadastrado e atalho para seus detalhes.
+- Cada card mostra identificação, combustível, litros teóricos disponíveis, capacidade total, percentual de ocupação, barra de capacidade em relação à capacidade operacional, autonomia, média diária, previsão de esgotamento e situação. Priorizar litros, barra, autonomia e capacidade.
+- Cards ficam lado a lado no computador e em coluna no celular. Cores de estoque confortável/atenção/crítico usam faixas configuráveis; card crítico recebe destaque visual.
+- Atualizar após fechamento finalizado, entrada, medição, movimento ou correção autorizada. Estoque principal usa o teórico; última medição aparece separadamente como informação complementar.
+- Não preencher tanques nem quantidades de exemplo: antes de cadastro real, mostrar instrução de configuração, não valores simulados.
+
+### [ ] Controle de divergências, histórico e resumo mensal
+- Criar “Controle de Divergências” integrado ao fechamento. Toda sobra/falta finalizada gera ocorrência vinculada ao fechamento, data, turno, frentista, conferente, tipo, valor, justificativa e status, sem depender de cadastro manual. Não apagar ocorrências individuais ao calcular saldo.
+- Usar o funcionário já associado ao fechamento. Se houver vários responsáveis, permitir identificá-los e registrar uma regra explícita de atribuição; não imputar automaticamente a divergência inteira a uma única pessoa sem fundamento.
+- Histórico individual apresenta fechamentos realizados/conferidos, contagens e valores de sobras/faltas, saldo acumulado e detalhes cronológicos; gráficos mensais mostram frequência e valores. Cada ocorrência permanece individual.
+- “Fechamento mensal de divergências” permite selecionar mês/funcionário e mostra quantidades de fechamentos, conferidos, sobras e faltas, total de sobras, total de faltas e saldo líquido = sobras − faltas; lista todas as ocorrências e permite gerar PDF.
+- Cada ocorrência pode ser Pendente de análise, Em investigação, Justificada, Encerrada sem desconto, Encaminhada para análise administrativa ou Resolvida. Gerente/administrador registra comentários, justificativas, evidências, resultado e responsável pela decisão. Não presumir culpa por falta financeira.
+- Análise de Ajustes de Folha registra funcionário, período, ocorrência, valor original, valor eventualmente aprovado, justificativa, aprovador, data e situação (Não elegível, Aguardando análise, Aguardando autorização, Aprovado, Rejeitado, Encaminhado à folha, Processado). Nunca descontar automaticamente, presumir culpa, compensar sobras e faltas ou encaminhar sem análise individual, documentação, autorização e validação administrativa/jurídica aplicável (incluindo art. 462 da CLT).
+- Relatório mensal administrativo inclui funcionário, contagens, totais, saldo, ocorrências pendentes/justificadas e eventuais ajustes aprovados; permite ordenar por quantidade/valor, sem classificar pessoas como culpadas.
+
+### [ ] Permissões, integridade, auditoria e segurança dos módulos
+- Preservar os papéis atuais e aplicar autorização no backend, banco e interface: frentista sem acesso ao estoque geral/movimentos/ocorrências de terceiros/ajustes de folha; consulta às próprias ocorrências conforme configuração. Gerente consulta estoque, registra entradas/medições/movimentos autorizados, analisa divergências e consulta relatórios, mas não aprova folha salvo autorização expressa. Administrador configura tanques/alertas, gerencia movimentos e divergências e autoriza análises administrativas.
+- Usar o banco atual e migrações versionadas, preservando todos os registros; não criar base isolada. Fechamentos alimentam saídas; entradas atualizam saldo; medições permitem conciliação; histórico real alimenta autonomia; ocorrências alimentam histórico e consolidação mensal; dashboard apresenta tanques.
+- Registrar alterações importantes em auditoria. Edições e reaberturas não geram movimentação de estoque ou ocorrência duplicada. Movimentos não são alterados silenciosamente; correções têm rastreabilidade.
+- Validar fluxos sem introduzir dados de teste no banco compartilhado de desenvolvimento/publicação; testar por checagem de tipos, testes unitários isolados e inspeção dos caminhos integrados.
+
+### [ ] Validação integrada de aceite
+- Verificar responsividade de páginas, formulários, tabelas, gráficos, menus, barra inferior, navegação e geração PDF em celular.
+- Verificar cadastro de tanque, estoque inicial, entrada, atualização de saldo, saída de fechamento, medição física, diferença, autonomia, alertas e sugestão de reposição.
+- Verificar cards dos tanques no dashboard e atualização após cada movimento, com responsividade e estados sem dados.
+- Verificar ocorrência de sobra e falta, vínculo ao funcionário correto, histórico individual, relatório mensal, justificativas e decisões sem desconto automático.
+- Confirmar preservação de dados existentes, persistência, permissões por perfil, auditoria e ausência de duplicidade.

@@ -15,6 +15,20 @@
       "when": 1795291748954,
       "tag": "0001_smiling_electro",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1795297876153,
+      "tag": "0002_inventory_discrepancies",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1795298624271,
+      "tag": "0003_payroll_review_revisions",
+      "breakpoints": true
     }
   ]
 }

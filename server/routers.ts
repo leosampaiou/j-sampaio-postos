@@ -3,9 +3,12 @@ import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-o
 import { z } from "zod";
 import { businessDateInSaoPaulo } from "../shared/businessDate";
 import {
-  appSessions, appUsers, auditEvents, closureNozzles, closurePayments, closures,
+  appSessions, appUsers, auditEvents, closureNozzles, closureParticipants, closurePayments, closures,
   employees, fuelPrices, fuelPumps, unitSettings, units,
 } from "../drizzle/schema";
+import { syncFinalizedClosure } from "./closureIntegrations";
+import { discrepanciesRouter } from "./routers/discrepancies";
+import { inventoryRouter } from "./routers/inventory";
 import { getDb } from "./db";
 import { constantTimeEqual, hashPassword, hashToken, issueSession, verifyPassword, APP_SESSION_COOKIE } from "./_core/appAuth";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -116,6 +119,11 @@ const employeesRouter = router({
     const where = ctx.user.role === "frentista" ? and(eq(employees.unitId, ctx.user.unitId), eq(employees.linkedUserId, ctx.user.id)) : eq(employees.unitId, ctx.user.unitId);
     return db.select().from(employees).where(where).orderBy(asc(employees.fullName));
   }),
+  participantOptions: protectedProcedure.query(async ({ ctx }) => {
+    const db = await getDb();
+    return db.select({ id: employees.id, fullName: employees.fullName })
+      .from(employees).where(and(eq(employees.unitId, ctx.user.unitId), eq(employees.active, true))).orderBy(asc(employees.fullName));
+  }),
   create: managerProcedure.input(z.object({ fullName: z.string().trim().min(2).max(160) })).mutation(async ({ input, ctx }) => {
     const db = await getDb();
     const result = await db.insert(employees).values({ unitId: ctx.user.unitId, fullName: input.fullName });
@@ -209,10 +217,16 @@ const closureInput = z.object({
   responsibleConfirmed: z.boolean(),
   nozzles: z.array(z.object({ pumpId: z.number().int().positive(), initialReading: z.string(), finalReading: z.string() })).min(1).max(20),
   payments: z.array(z.object({ method: paymentSchema, amountCents: z.number().int().min(0).max(100000000) })).length(4),
+  participants: z.array(z.object({ employeeId: z.number().int().positive(), sharePercent: z.number().int().min(1).max(100) })).min(1).max(10).optional(),
 }).superRefine((input, ctx) => {
   if (input.closureId && (!input.changeReason || input.changeReason.length < 5)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["changeReason"], message: "Informe uma justificativa de pelo menos 5 caracteres para corrigir um fechamento existente." });
   }
+  const participants = input.participants ?? [];
+  if (!participants.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["participants"], message: "Informe explicitamente os participantes e o rateio antes de salvar." });
+  if (new Set(participants.map(person => person.employeeId)).size !== participants.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["participants"], message: "Não repita funcionários no fechamento." });
+  if (!participants.some(person => person.employeeId === input.employeeId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["participants"], message: "O frentista principal precisa estar entre os participantes." });
+  if (participants.reduce((sum, person) => sum + person.sharePercent, 0) !== 100) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["participants"], message: "A soma da participação dos funcionários deve ser 100%." });
 });
 
 const closuresRouter = router({
@@ -223,34 +237,54 @@ const closuresRouter = router({
     if (input?.to) conditions.push(lte(closures.closureDate, input.to));
     if (input?.shift) conditions.push(eq(closures.shift, input.shift));
     if (input?.status && ["rascunho", "aguardando_conferencia", "finalizado", "reaberto"].includes(input.status)) conditions.push(eq(closures.status, input.status as "rascunho" | "aguardando_conferencia" | "finalizado" | "reaberto"));
-    if (ctx.user.role === "frentista") conditions.push(or(eq(closures.createdBy, ctx.user.id), eq(employees.linkedUserId, ctx.user.id))!);
+    let ownEmployeeIds: number[] | null = null;
+    if (ctx.user.role === "frentista") {
+      const ownEmployees = await db.select({ id: employees.id }).from(employees).where(and(eq(employees.unitId, ctx.user.unitId), eq(employees.linkedUserId, ctx.user.id)));
+      ownEmployeeIds = ownEmployees.map(person => person.id);
+      const participated = ownEmployeeIds.length ? await db.select({ closureId: closureParticipants.closureId }).from(closureParticipants).where(inArray(closureParticipants.employeeId, ownEmployeeIds)) : [];
+      const permittedClosureIds = [...new Set(participated.map(item => item.closureId))];
+      const ownClosure = permittedClosureIds.length ? inArray(closures.id, permittedClosureIds) : eq(employees.linkedUserId, ctx.user.id);
+      conditions.push(or(eq(closures.createdBy, ctx.user.id), eq(employees.linkedUserId, ctx.user.id), ownClosure)!);
+    }
     const all = await db.select({ closure: closures, employeeName: employees.fullName }).from(closures).leftJoin(employees, eq(closures.employeeId, employees.id)).where(and(...conditions)).orderBy(desc(closures.closureDate), asc(closures.shift)).limit(500);
-    return all.map(row => ({ ...row.closure, employeeName: row.employeeName ?? "Funcionário" }));
+    return all.map(row => ({ ...row.closure, employeeName: ownEmployeeIds && !ownEmployeeIds.includes(row.closure.employeeId) ? "Fechamento compartilhado" : row.employeeName ?? "Funcionário" }));
   }),
   detail: protectedProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = await getDb();
     const [row] = await db.select({ closure: closures, employeeName: employees.fullName }).from(closures).leftJoin(employees, eq(closures.employeeId, employees.id)).where(and(eq(closures.id, input.id), eq(closures.unitId, ctx.user.unitId))).limit(1);
     if (!row) throw new TRPCError({ code: "NOT_FOUND" });
-    if (ctx.user.role === "frentista" && row.closure.createdBy !== ctx.user.id) {
-      const [linked] = await db.select({ id: employees.id }).from(employees).where(and(eq(employees.id, row.closure.employeeId), eq(employees.linkedUserId, ctx.user.id))).limit(1);
-      if (!linked) throw new TRPCError({ code: "FORBIDDEN" });
+    let ownEmployeeIds: number[] | null = null;
+    if (ctx.user.role === "frentista") {
+      const ownEmployees = await db.select({ id: employees.id }).from(employees).where(and(eq(employees.unitId, ctx.user.unitId), eq(employees.linkedUserId, ctx.user.id)));
+      ownEmployeeIds = ownEmployees.map(person => person.id);
+      if (row.closure.createdBy !== ctx.user.id) {
+        const primaryMatch = ownEmployeeIds.includes(row.closure.employeeId);
+        const participantMatch = ownEmployeeIds.length ? await db.select({ id: closureParticipants.id }).from(closureParticipants).where(and(eq(closureParticipants.closureId, input.id), inArray(closureParticipants.employeeId, ownEmployeeIds))).limit(1) : [];
+        if (!primaryMatch && !participantMatch.length) throw new TRPCError({ code: "FORBIDDEN" });
+      }
     }
-    const [nozzles, payments] = await Promise.all([
+    const [nozzles, payments, participantRows] = await Promise.all([
       db.select().from(closureNozzles).where(eq(closureNozzles.closureId, input.id)).orderBy(asc(closureNozzles.pumpNumber)),
       db.select().from(closurePayments).where(eq(closurePayments.closureId, input.id)).orderBy(asc(closurePayments.method)),
+      db.select({ employeeId: closureParticipants.employeeId, sharePercent: closureParticipants.sharePercent, employeeName: employees.fullName }).from(closureParticipants).innerJoin(employees, eq(closureParticipants.employeeId, employees.id)).where(eq(closureParticipants.closureId, input.id)).orderBy(asc(closureParticipants.employeeId)),
     ]);
     const [unit] = await db.select().from(units).where(eq(units.id, ctx.user.unitId)).limit(1);
-    return { ...row.closure, employeeName: row.employeeName ?? "Funcionário", nozzles, payments, unit };
+    return { ...row.closure, employeeName: ownEmployeeIds && !ownEmployeeIds.includes(row.closure.employeeId) ? "Fechamento compartilhado" : row.employeeName ?? "Funcionário", nozzles, payments, participants: ownEmployeeIds ? participantRows.filter(person => ownEmployeeIds!.includes(person.employeeId)) : participantRows, unit };
   }),
   saveDraft: protectedProcedure.input(closureInput).mutation(async ({ input, ctx }) => {
     const db = await getDb();
     const [employee] = await db.select().from(employees).where(and(eq(employees.id, input.employeeId), eq(employees.unitId, ctx.user.unitId), eq(employees.active, true))).limit(1);
     if (!employee) throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione um funcionário ativo." });
     if (ctx.user.role === "frentista" && employee.linkedUserId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Você só pode lançar o seu próprio turno." });
+    const participants = input.participants ?? [];
+    const participantIds = participants.map(person => person.employeeId);
+    const activeParticipants = await db.select().from(employees).where(and(eq(employees.unitId, ctx.user.unitId), eq(employees.active, true), inArray(employees.id, participantIds)));
+    if (activeParticipants.length !== participantIds.length) throw new TRPCError({ code: "BAD_REQUEST", message: "Todos os participantes precisam ser funcionários ativos desta unidade." });
 
     let existing: typeof closures.$inferSelect | undefined;
     let priorNozzles: (typeof closureNozzles.$inferSelect)[] = [];
     let priorPayments: (typeof closurePayments.$inferSelect)[] = [];
+    let priorParticipants: (typeof closureParticipants.$inferSelect)[] = [];
     if (input.closureId) {
       const [found] = await db.select().from(closures).where(and(eq(closures.id, input.closureId), eq(closures.unitId, ctx.user.unitId))).limit(1);
       if (!found) throw new TRPCError({ code: "NOT_FOUND" });
@@ -261,6 +295,7 @@ const closuresRouter = router({
         db.select().from(closureNozzles).where(eq(closureNozzles.closureId, existing.id)),
         db.select().from(closurePayments).where(eq(closurePayments.closureId, existing.id)),
       ]);
+      priorParticipants = await db.select().from(closureParticipants).where(eq(closureParticipants.closureId, existing.id));
       if (!priorNozzles.length) throw new TRPCError({ code: "CONFLICT", message: "O fechamento não possui leituras históricas para preservar." });
     }
 
@@ -316,14 +351,19 @@ const closuresRouter = router({
       const oldPayments = priorPayments.map(p => ({ method: p.method, amountCents: p.amountCents })).sort((a,b)=>a.method.localeCompare(b.method));
       const newPayments = input.payments.map(p => ({ method: p.method, amountCents: p.amountCents })).sort((a,b)=>a.method.localeCompare(b.method));
       recordChange("payments", oldPayments, newPayments);
+      const oldParticipants = priorParticipants.map(person => ({ employeeId: person.employeeId, sharePercent: person.sharePercent })).sort((a,b)=>a.employeeId-b.employeeId);
+      const newParticipants = participants.map(person => ({ employeeId: person.employeeId, sharePercent: person.sharePercent })).sort((a,b)=>a.employeeId-b.employeeId);
+      recordChange("participants", oldParticipants, newParticipants);
       recordChange("status", existing.status, "rascunho");
       const auditRows = changes.length ? changes : [{ field: "", beforeValue: "", afterValue: "" }];
       await db.transaction(async tx => {
-        await tx.update(closures).set({ closureDate: input.closureDate, shift: input.shift, employeeId: input.employeeId, responsibleName: input.responsibleName, notes: input.notes, employeeConfirmed: input.employeeConfirmed, responsibleConfirmed: input.responsibleConfirmed, salesCents, receivedCents, differenceCents, toleranceCents, result, status: "rascunho" }).where(eq(closures.id, existing!.id));
+        await tx.update(closures).set({ closureDate: input.closureDate, shift: input.shift, employeeId: input.employeeId, responsibleName: input.responsibleName, notes: input.notes, employeeConfirmed: input.employeeConfirmed, responsibleConfirmed: input.responsibleConfirmed, salesCents, receivedCents, differenceCents, toleranceCents, result, status: "rascunho", revision: existing!.revision + 1 }).where(eq(closures.id, existing!.id));
         await tx.delete(closureNozzles).where(eq(closureNozzles.closureId, existing!.id));
         await tx.delete(closurePayments).where(eq(closurePayments.closureId, existing!.id));
+        await tx.delete(closureParticipants).where(eq(closureParticipants.closureId, existing!.id));
         await tx.insert(closureNozzles).values(nozzleValues.map(n => ({ ...n, closureId: existing!.id })));
         await tx.insert(closurePayments).values(input.payments.map(p => ({ ...p, closureId: existing!.id })));
+        await tx.insert(closureParticipants).values(participants.map(person => ({ ...person, closureId: existing!.id })));
         await tx.insert(auditEvents).values(auditRows.map(change => ({ unitId: ctx.user.unitId, userId: ctx.user.id, targetType: "closure", targetId: existing!.id, action: changes.length ? "closure_updated" : "closure_saved", field: change.field || null, beforeValue: change.beforeValue || null, afterValue: change.afterValue || null, reason: changeReason })));
       });
       return { id: existing.id, salesCents, receivedCents, differenceCents, result };
@@ -334,6 +374,7 @@ const closuresRouter = router({
       const id = Number(inserted[0].insertId);
       await tx.insert(closureNozzles).values(nozzleValues.map(n => ({ ...n, closureId: id })));
       await tx.insert(closurePayments).values(input.payments.map(p => ({ ...p, closureId: id })));
+      await tx.insert(closureParticipants).values(participants.map(person => ({ ...person, closureId: id })));
       await tx.insert(auditEvents).values({ unitId: ctx.user.unitId, userId: ctx.user.id, targetType: "closure", targetId: id, action: "created", field: "status", beforeValue: null, afterValue: "rascunho", reason: null });
       return id;
     });
@@ -341,33 +382,75 @@ const closuresRouter = router({
   }),
   finalize: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
     const db = await getDb();
-    const [closure] = await db.select().from(closures).where(and(eq(closures.id, input.id), eq(closures.unitId, ctx.user.unitId))).limit(1);
-    if (!closure) throw new TRPCError({ code: "NOT_FOUND" });
-    if (closure.status === "finalizado" || closure.status === "aguardando_conferencia") throw new TRPCError({ code: "CONFLICT", message: "Este fechamento já foi enviado." });
-    if (ctx.user.role === "frentista" && closure.createdBy !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN" });
-    if (!closure.employeeConfirmed || !closure.responsibleConfirmed) throw new TRPCError({ code: "BAD_REQUEST", message: "Confirme as responsabilidades antes de enviar." });
-    const status = ctx.user.role === "frentista" ? "aguardando_conferencia" : "finalizado";
-    await db.transaction(async tx => {
+    const finalStatus = await db.transaction(async tx => {
+      const [closure] = await tx.select().from(closures)
+        .where(and(eq(closures.id, input.id), eq(closures.unitId, ctx.user.unitId))).limit(1).for("update");
+      if (!closure) throw new TRPCError({ code: "NOT_FOUND" });
+      if (closure.status === "finalizado" || closure.status === "aguardando_conferencia") throw new TRPCError({ code: "CONFLICT", message: "Este fechamento já foi enviado." });
+      if (ctx.user.role === "frentista" && closure.createdBy !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN" });
+      if (!closure.employeeConfirmed || !closure.responsibleConfirmed) throw new TRPCError({ code: "BAD_REQUEST", message: "Confirme as responsabilidades antes de enviar." });
+      const status: "aguardando_conferencia" | "finalizado" = ctx.user.role === "frentista" ? "aguardando_conferencia" : "finalizado";
       await tx.update(closures).set({ status, finalizedAt: status === "finalizado" ? new Date() : null }).where(eq(closures.id, input.id));
+      if (status === "finalizado") await syncFinalizedClosure(tx, { closureId: input.id, unitId: ctx.user.unitId, userId: ctx.user.id });
       await tx.insert(auditEvents).values({ unitId: ctx.user.unitId, userId: ctx.user.id, targetType: "closure", targetId: input.id, action: "submitted", field: "status", beforeValue: closure.status, afterValue: status, reason: status === "finalizado" ? "Finalizado pelo responsável" : "Aguardando conferência gerencial" });
+      return status;
     });
-    return { success: true, status };
+    return { success: true, status: finalStatus };
   }),
-  confirm: managerProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+  confirm: managerProcedure.input(z.object({
+    id: z.number().int().positive(),
+    participants: z.array(z.object({ employeeId: z.number().int().positive(), sharePercent: z.number().int().min(1).max(100) })).min(1).max(10),
+  }).superRefine((input, issueContext) => {
+    if (new Set(input.participants.map(person => person.employeeId)).size !== input.participants.length) {
+      issueContext.addIssue({ code: z.ZodIssueCode.custom, path: ["participants"], message: "Não repita funcionários no rateio confirmado." });
+    }
+    if (input.participants.reduce((sum, person) => sum + person.sharePercent, 0) !== 100) {
+      issueContext.addIssue({ code: z.ZodIssueCode.custom, path: ["participants"], message: "O rateio confirmado deve totalizar 100%." });
+    }
+  })).mutation(async ({ input, ctx }) => {
     const db = await getDb();
-    const [closure] = await db.select().from(closures).where(and(eq(closures.id, input.id), eq(closures.unitId, ctx.user.unitId))).limit(1);
-    if (!closure || closure.status !== "aguardando_conferencia") throw new TRPCError({ code: "CONFLICT", message: "Fechamento não está aguardando conferência." });
     await db.transaction(async tx => {
+      const [closure] = await tx.select().from(closures)
+        .where(and(eq(closures.id, input.id), eq(closures.unitId, ctx.user.unitId))).limit(1).for("update");
+      if (!closure || closure.status !== "aguardando_conferencia") throw new TRPCError({ code: "CONFLICT", message: "Fechamento não está aguardando conferência." });
+      if (!input.participants.some(person => person.employeeId === closure.employeeId)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "O frentista principal deve estar incluído no rateio confirmado." });
+      }
+      const participantIds = input.participants.map(person => person.employeeId);
+      const activeParticipants = await tx.select({ id: employees.id }).from(employees).where(and(
+        eq(employees.unitId, ctx.user.unitId), eq(employees.active, true), inArray(employees.id, participantIds),
+      ));
+      if (activeParticipants.length !== participantIds.length) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Todos os participantes confirmados precisam ser funcionários ativos desta unidade." });
+      }
+      const previousParticipants = await tx.select({ employeeId: closureParticipants.employeeId, sharePercent: closureParticipants.sharePercent })
+        .from(closureParticipants).where(eq(closureParticipants.closureId, input.id)).orderBy(asc(closureParticipants.employeeId));
+      const confirmedParticipants = [...input.participants].sort((a, b) => a.employeeId - b.employeeId);
+      await tx.delete(closureParticipants).where(eq(closureParticipants.closureId, input.id));
+      await tx.insert(closureParticipants).values(confirmedParticipants.map(person => ({ ...person, closureId: input.id })));
+      await tx.insert(auditEvents).values({
+        unitId: ctx.user.unitId,
+        userId: ctx.user.id,
+        targetType: "closure",
+        targetId: input.id,
+        action: "participants_confirmed",
+        field: "participants",
+        beforeValue: JSON.stringify(previousParticipants),
+        afterValue: JSON.stringify(confirmedParticipants),
+        reason: "Rateio explícito revisado e confirmado por gerente antes da finalização.",
+      });
       await tx.update(closures).set({ status: "finalizado", finalizedAt: new Date() }).where(eq(closures.id, input.id));
+      await syncFinalizedClosure(tx, { closureId: input.id, unitId: ctx.user.unitId, userId: ctx.user.id });
       await tx.insert(auditEvents).values({ unitId: ctx.user.unitId, userId: ctx.user.id, targetType: "closure", targetId: input.id, action: "confirmed", field: "status", beforeValue: "aguardando_conferencia", afterValue: "finalizado", reason: null });
     });
     return { success: true };
   }),
   reopen: adminProcedure.input(z.object({ id: z.number().int().positive(), reason: z.string().trim().min(5).max(1000) })).mutation(async ({ input, ctx }) => {
     const db = await getDb();
-    const [closure] = await db.select().from(closures).where(and(eq(closures.id, input.id), eq(closures.unitId, ctx.user.unitId))).limit(1);
-    if (!closure || closure.status !== "finalizado") throw new TRPCError({ code: "CONFLICT", message: "Somente fechamentos finalizados podem ser reabertos." });
     await db.transaction(async tx => {
+      const [closure] = await tx.select().from(closures)
+        .where(and(eq(closures.id, input.id), eq(closures.unitId, ctx.user.unitId))).limit(1).for("update");
+      if (!closure || closure.status !== "finalizado") throw new TRPCError({ code: "CONFLICT", message: "Somente fechamentos finalizados podem ser reabertos." });
       await tx.update(closures).set({ status: "reaberto", reopenedAt: new Date(), finalizedAt: null }).where(eq(closures.id, input.id));
       await tx.insert(auditEvents).values({ unitId: ctx.user.unitId, userId: ctx.user.id, targetType: "closure", targetId: input.id, action: "reopened", field: "status", beforeValue: "finalizado", afterValue: "reaberto", reason: input.reason });
     });
@@ -382,14 +465,17 @@ const analyticsRouter = router({
     const cond = [eq(closures.unitId, ctx.user.unitId), eq(closures.status, "finalizado" as const)];
     if (input?.from) cond.push(gte(closures.closureDate, input.from));
     if (input?.to) cond.push(lte(closures.closureDate, input.to));
-    const rows = await db.select().from(closures).where(and(...cond)).orderBy(asc(closures.closureDate));
+    const [rows, today] = await Promise.all([
+      db.select().from(closures).where(and(...cond)).orderBy(asc(closures.closureDate)),
+      db.select().from(closures).where(and(eq(closures.unitId, ctx.user.unitId), eq(closures.status, "finalizado"), eq(closures.closureDate, businessToday))),
+    ]);
     const start = input?.from ?? businessToday;
     const end = input?.to ?? businessToday;
     const all = rows.filter(r => r.closureDate >= start && r.closureDate <= end);
-    const total = (arr: typeof all, key: "salesCents" | "receivedCents") => arr.reduce((sum, r) => sum + r[key], 0);
-    const today = all.filter(r => r.closureDate === businessToday);
+    const total = (arr: typeof rows, key: "salesCents" | "receivedCents") => arr.reduce((sum, r) => sum + r[key], 0);
     const nozzles = all.length ? await db.select({ closureId: closureNozzles.closureId, fuelType: closureNozzles.fuelType, liters: closureNozzles.liters, valueCents: closureNozzles.valueCents }).from(closureNozzles).innerJoin(closures, eq(closureNozzles.closureId, closures.id)).where(and(eq(closures.unitId, ctx.user.unitId), eq(closures.status, "finalizado" as const), gte(closures.closureDate, start), lte(closures.closureDate, end))) : [];
     const payments = all.length ? await db.select({ method: closurePayments.method, amountCents: closurePayments.amountCents }).from(closurePayments).innerJoin(closures, eq(closurePayments.closureId, closures.id)).where(and(eq(closures.unitId, ctx.user.unitId), eq(closures.status, "finalizado" as const), gte(closures.closureDate, start), lte(closures.closureDate, end))) : [];
+    const todayNozzles = today.length ? await db.select({ liters: closureNozzles.liters }).from(closureNozzles).innerJoin(closures, eq(closureNozzles.closureId, closures.id)).where(and(eq(closures.unitId, ctx.user.unitId), eq(closures.status, "finalizado" as const), eq(closures.closureDate, businessToday))) : [];
     const shifts = ["manha", "tarde", "noite"] as const;
     const todayStatuses = await db.select({ shift: closures.shift, status: closures.status, result: closures.result }).from(closures).where(and(eq(closures.unitId, ctx.user.unitId), eq(closures.closureDate, businessToday)));
     const pendingRows = await db.select({ status: closures.status, result: closures.result, differenceCents: closures.differenceCents }).from(closures).where(and(eq(closures.unitId, ctx.user.unitId), gte(closures.closureDate, start), lte(closures.closureDate, end)));
@@ -399,8 +485,7 @@ const analyticsRouter = router({
     nozzles.forEach(n => { fuelStats[n.fuelType].liters += Number(n.liters); fuelStats[n.fuelType].valueCents += n.valueCents; });
     const paymentStats = { dinheiro: 0, pix: 0, debito: 0, credito: 0 };
     payments.forEach(p => { paymentStats[p.method] += p.amountCents; });
-    const todayIds = new Set(today.map(row => row.id));
-    const todayLiters = nozzles.filter(nozzle => todayIds.has(nozzle.closureId)).reduce((sum, nozzle) => sum + Number(nozzle.liters), 0);
+    const todayLiters = todayNozzles.reduce((sum, nozzle) => sum + Number(nozzle.liters), 0);
     const surplusCents = all.filter(r => r.result === "sobra").reduce((sum, r) => sum + r.differenceCents, 0);
     const shortageCents = Math.abs(all.filter(r => r.result === "falta").reduce((sum, r) => sum + r.differenceCents, 0));
     const netCashBalanceCents = surplusCents - shortageCents;
@@ -431,6 +516,8 @@ export const appRouter = router({
   settings: settingsRouter,
   closures: closuresRouter,
   analytics: analyticsRouter,
+  inventory: inventoryRouter,
+  discrepancies: discrepanciesRouter,
   audit: auditRouter,
 });
 export type AppRouter = typeof appRouter;
