@@ -12,6 +12,7 @@ import { inventoryRouter } from "./routers/inventory";
 import { getDb } from "./db";
 import { constantTimeEqual, hashPassword, hashToken, issueSession, verifyPassword, APP_SESSION_COOKIE } from "./_core/appAuth";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { revokeCurrentSession } from "./_core/logout";
 import { adminProcedure, managerProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { systemRouter } from "./_core/systemRouter";
 
@@ -102,13 +103,10 @@ const authRouter = router({
   }),
   me: protectedProcedure.query(({ ctx }) => ({ user: publicUser(ctx.user), csrfToken: ctx.session.csrfToken })),
   logout: protectedProcedure.mutation(async ({ ctx }) => {
-    const token = ctx.req.cookies?.[APP_SESSION_COOKIE] ?? ctx.req.headers.cookie?.split(";").map(x => x.trim()).find(x => x.startsWith(`${APP_SESSION_COOKIE}=`))?.slice(APP_SESSION_COOKIE.length + 1);
-    if (token) {
-      const db = await getDb();
-      await db.update(appSessions).set({ revokedAt: new Date() }).where(eq(appSessions.tokenHash, hashToken(decodeURIComponent(token))));
-    }
-    ctx.res.clearCookie(APP_SESSION_COOKIE, { ...getSessionCookieOptions(), maxAge: 0 });
-    return { success: true };
+    const db = await getDb();
+    return revokeCurrentSession(ctx.session.tokenHash, async tokenHash => {
+      await db.update(appSessions).set({ revokedAt: new Date() }).where(eq(appSessions.tokenHash, tokenHash));
+    }, () => ctx.res.clearCookie(APP_SESSION_COOKIE, { ...getSessionCookieOptions(), maxAge: 0 }));
   }),
 });
 const loginAttempts = new Map<string, { count: number; until: number }>();
@@ -248,6 +246,28 @@ const closuresRouter = router({
     }
     const all = await db.select({ closure: closures, employeeName: employees.fullName }).from(closures).leftJoin(employees, eq(closures.employeeId, employees.id)).where(and(...conditions)).orderBy(desc(closures.closureDate), asc(closures.shift)).limit(500);
     return all.map(row => ({ ...row.closure, employeeName: ownEmployeeIds && !ownEmployeeIds.includes(row.closure.employeeId) ? "Fechamento compartilhado" : row.employeeName ?? "Funcionário" }));
+  }),
+  listPage: protectedProcedure.input(z.object({ from: z.string().optional(), to: z.string().optional(), shift: shiftSchema.optional(), status: z.string().optional(), cursor: z.number().int().min(1).nullish(), limit: z.number().int().min(1).max(100).default(50) })).query(async ({ input, ctx }) => {
+    const db = await getDb();
+    const conditions = [eq(closures.unitId, ctx.user.unitId)];
+    if (input.from) conditions.push(gte(closures.closureDate, input.from));
+    if (input.to) conditions.push(lte(closures.closureDate, input.to));
+    if (input.shift) conditions.push(eq(closures.shift, input.shift));
+    if (input.status && ["rascunho", "aguardando_conferencia", "finalizado", "reaberto"].includes(input.status)) conditions.push(eq(closures.status, input.status as "rascunho" | "aguardando_conferencia" | "finalizado" | "reaberto"));
+    let ownEmployeeIds: number[] | null = null;
+    if (ctx.user.role === "frentista") {
+      const ownEmployees = await db.select({ id: employees.id }).from(employees).where(and(eq(employees.unitId, ctx.user.unitId), eq(employees.linkedUserId, ctx.user.id)));
+      ownEmployeeIds = ownEmployees.map(person => person.id);
+      const participated = ownEmployeeIds.length ? await db.select({ closureId: closureParticipants.closureId }).from(closureParticipants).where(inArray(closureParticipants.employeeId, ownEmployeeIds)) : [];
+      const permittedClosureIds = [...new Set(participated.map(item => item.closureId))];
+      const ownClosure = permittedClosureIds.length ? inArray(closures.id, permittedClosureIds) : eq(employees.linkedUserId, ctx.user.id);
+      conditions.push(or(eq(closures.createdBy, ctx.user.id), eq(employees.linkedUserId, ctx.user.id), ownClosure)!);
+    }
+    const cursor = input.cursor ?? 1;
+    const rows = await db.select({ closure: closures, employeeName: employees.fullName }).from(closures).leftJoin(employees, eq(closures.employeeId, employees.id)).where(and(...conditions)).orderBy(desc(closures.closureDate), asc(closures.shift)).limit(input.limit + 1).offset((cursor - 1) * input.limit);
+    const hasMore = rows.length > input.limit;
+    const items = rows.slice(0, input.limit).map(row => ({ ...row.closure, employeeName: ownEmployeeIds && !ownEmployeeIds.includes(row.closure.employeeId) ? "Fechamento compartilhado" : row.employeeName ?? "Funcionário" }));
+    return { items, nextCursor: hasMore ? cursor + 1 : null };
   }),
   detail: protectedProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = await getDb();

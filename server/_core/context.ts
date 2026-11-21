@@ -10,16 +10,8 @@ export type TrpcContext = {
 };
 
 export async function createContext(opts: CreateExpressContextOptions): Promise<TrpcContext> {
-  let user: AppUser | null = null;
-  let session: AppSession | null = null;
-  try {
-    const authenticated = await authenticateRequest(opts.req);
-    if (authenticated) {
-      user = authenticated.user;
-      session = authenticated.session;
-    }
-  } catch (error) {
-    console.error("[Auth] Request authentication failed:", error instanceof Error ? error.message : "unknown error");
-  }
+  const authenticated = await authenticateRequest(opts.req);
+  const user: AppUser | null = authenticated?.user ?? null;
+  const session: AppSession | null = authenticated?.session ?? null;
   return { req: opts.req, res: opts.res, user, session };
 }

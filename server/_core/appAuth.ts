@@ -51,12 +51,7 @@ export async function authenticateRequest(req: Request) {
   const bearer = req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : undefined;
   const token = cookie || bearer;
   if (!token || token.length > 200) return null;
-  try {
-    return await findSession(hashToken(token));
-  } catch (error) {
-    console.error("[Auth] Session lookup failed:", error instanceof Error ? error.message : "unknown error");
-    return null;
-  }
+  return findSession(hashToken(token));
 }
 
 export async function authenticateCredentials(username: string, password: string) {

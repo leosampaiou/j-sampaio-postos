@@ -92,3 +92,30 @@ Evoluir a aplicação React + Vite + TypeScript, Express/tRPC, Drizzle/MySQL e a
 ### Dependências e restrições de entrega
 
 A configuração corrente tem Server e Database ativos, Preview na porta 3000, TypeScript registrado em diagnósticos e `publishing.auto_publish=false`. A mudança será validada com os comandos existentes (`pnpm check`, `pnpm test`, `pnpm build`); não publicar o site. Ao terminar e revisar o esquema, criar um commit em `main` e empurrar ao remoto canônico para salvar checkpoint; atualizar também o espelho público GitHub já autorizado, omitindo `.manus-starter-init.json` e outros metadados internos.
+
+
+## Correção de confiabilidade — login, logout, impressão e dados persistidos (21/11/2026)
+
+### Abordagem e diagnóstico confirmado
+
+Preservar React 19, TypeScript, Vite, Express/tRPC, Drizzle/MySQL, Wouter, identidade visual, contas e registros; corrigir apenas os caminhos existentes. A consulta read-only ao banco confirmou que há registros de fechamento persistidos, mas o procedimento real `closures.list` falha com `ER_BAD_FIELD_ERROR: Unknown column 'closures.revision' in 'field list'`. A coluna é acrescentada por `drizzle/0002_inventory_discrepancies.sql`; a conferência dos hashes do diário real confirmou `0000_initial_users` e `0001_smiling_electro` aplicadas, com `0002_inventory_discrepancies` e `0003_payroll_review_revisions` pendentes. O frontend confunde erros de consulta com listas vazias e zeros, agravando o sintoma. Nenhuma migração ou escrita de banco foi executada.
+
+Antes de qualquer DDL, manter o banco compartilhado intacto e pedir aprovação explícita para aplicar as migrações pendentes somente após backup privado verificável. `0002` cria oito tabelas operacionais e adiciona `closures.revision`; `0003` altera o índice de unicidade de `payrollAdjustmentReviews` e acrescenta `closureRevision`. Não recriar tabelas, apagar/limpar dados, inserir amostras, trocar banco ou recriar contas. Se a migração não for autorizada, a aplicação deve mostrar falha real de serviço/esquema com tentativa de reconsulta, nunca simular ausência de dados.
+
+### Implementação mínima
+
+- Login: botão com o rótulo exato “Entrar”, contraste e largura estáveis em celular e desktop; durante envio, manter texto (“Entrando…”) e spinner visível, sem deixar o botão vazio.
+- Logout: revogar no servidor a sessão identificada por `ctx.session` (inclusive quando autenticada por Bearer), limpar o cookie e, só após sucesso, remover CSRF e todo o cache privado do cliente; pedir confirmação antes de sair. Redirecionar por substituição do histórico para `/login`, proteger o app em cada URL direta e revalidar páginas restauradas pelo botão Voltar sem expor conteúdo protegido. Falha de logout não deve apagar a credencial local nem fingir sucesso.
+- Impressão: substituir a ficha resumida atual por uma impressão A4 responsiva construída exclusivamente a partir do detalhe persistido: estabelecimento/razão social, CNPJ/endereço, data/turno, frentista e responsável; linhas dos bicos com leituras, litros, preço e valor; totais por combustível/vendas, recebimentos por modalidade, total recebido, diferença, resultado, observações, confirmações e horários. Usar quebra de página e estilos de impressão para evitar cortes, sobreposição ou interface do app; escapar texto dinâmico. O PDF/compartilhamento existente permanece separado.
+- Dados: separar loading, sucesso vazio e erro em histórico, detalhe, dashboard, relatórios, divergências, estoque e listas administrativas; oferecer retry e não renderizar zeros/“nenhum registro” durante falha. Propagar falha de infraestrutura de autenticação em vez de convertê-la em sessão ausente. Revisar filtros/permissões e retirar o limite silencioso do histórico com paginação/continuação segura, preservando o escopo por unidade e por perfil.
+- Privacidade de sessão: impedir cache HTTP de respostas tRPC e limpar/revalidar a página restaurada do BFCache após navegação, mantendo a validação de sessão no servidor.
+
+### Estrutura e entrega
+
+Reutilizar `client/src/pages/AuthPage.tsx`, `client/src/_core/hooks/useAuth.ts`, `client/src/App.tsx` e `client/src/pages/Home.tsx`; acrescentar, se útil, um gerador isolado de HTML de impressão e um componente reutilizável de erro/retry. Ajustar `server/routers.ts`, `server/_core/appAuth.ts`, `server/_core/context.ts` e `server/_core/index.ts` sem mudar a arquitetura. Testes automatizados usam fixtures/mocks e não fazem mutações ao banco real. Rodar diagnósticos TypeScript, testes e build. Não publicar; salvar commit somente no fluxo canônico já autorizado e preservar o espelho GitHub sem metadados internos.
+
+### Evidências e pendências registradas (21/11/2026)
+
+No Preview, login inválido exibiu “Usuário ou senha incorretos.” e o usuário entrou com uma conta existente. O logout, disparado pelo botão no DOM porque a camada do Preview interceptou o clique visual, percorreu a confirmação afirmativa, redirecionou a `/login` e foi confirmado pelo backend: `auth.me` retornou HTTP 401 / `UNAUTHORIZED`. A confirmação negativa manteve a sessão ativa; acesso direto a `/historico` e Voltar após logout permaneceram na tela de login. O login foi conferido visualmente em desktop e viewport móvel; o fluxo autenticado responsivo em Android físico ainda não foi inspecionado.
+
+Os testes isolados da impressão validam conteúdo e escape HTML, mas não substituem imprimir um fechamento real. Essa verificação, a leitura de dados após novo login e o aceite integrado permanecem bloqueados porque `closures.revision` não existe no esquema compartilhado; as migrações `0002` e `0003` não foram aplicadas, e nenhum DDL ou escrita foi executado. `pnpm check`, `pnpm test` (27 testes), `pnpm build` e `git diff --check` passaram; o build reportou apenas avisos já observados de chunk grande e script existente no `index.html`. `publishing.auto_publish=false` e o site não foi publicado.

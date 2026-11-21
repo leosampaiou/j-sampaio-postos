@@ -16,8 +16,18 @@ const trpcClient = trpc.createClient({ links: [httpBatchLink({
       return csrf ? { "x-csrf-token": csrf } : {};
     } catch { return {}; }
   },
-  fetch(input, init) { return globalThis.fetch(input, { ...(init ?? {}), credentials: "include" }); },
+  fetch(input, init) { return globalThis.fetch(input, { ...(init ?? {}), credentials: "include", cache: "no-store" }); },
 })] });
+
+window.addEventListener("pagehide", event => {
+  if (!event.persisted) return;
+  queryClient.clear();
+  document.documentElement.style.visibility = "hidden";
+});
+window.addEventListener("pageshow", event => {
+  if (event.persisted) window.location.reload();
+  else document.documentElement.style.removeProperty("visibility");
+});
 
 createRoot(document.getElementById("root")!).render(
   <trpc.Provider client={trpcClient} queryClient={queryClient}>

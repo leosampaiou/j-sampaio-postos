@@ -1026,3 +1026,50 @@ Preparar a estrutura para permitir:
 - Verificar cards dos tanques no dashboard e atualização após cada movimento, com responsividade e estados sem dados.
 - Verificar ocorrência de sobra e falta, vínculo ao funcionário correto, histórico individual, relatório mensal, justificativas e decisões sem desconto automático.
 - Confirmar preservação de dados existentes, persistência, permissões por perfil, auditoria e ausência de duplicidade.
+
+
+## Correções solicitadas — login, logout, impressão e dados persistidos (21/11/2026)
+
+### [ ] Login claro e responsivo
+- O botão de login deve mostrar claramente “Entrar”, permanecer visível em vários tamanhos de tela e funcionar normalmente.
+- Durante o carregamento, deve haver indicação visual e o botão nunca pode ficar vazio.
+- Preservar a identidade visual, validação existente e o fluxo seguro de criação inicial quando aplicável.
+
+### [ ] Logout, rotas protegidas e navegação Voltar
+- Encerrar a sessão no cliente e no backend, revogar a sessão/token válido e limpar tokens e dados privados autenticados do cache.
+- Após logout, redirecionar para o login usando substituição segura do histórico; rotas protegidas devem exigir sessão também quando acessadas diretamente.
+- O botão Voltar não pode revelar conteúdo protegido depois do logout; nova restauração de página deve revalidar a sessão.
+- Exigir confirmação antes de encerrar sessão para evitar logout acidental.
+- Verificar o comportamento em celular e computador. Se o logout falhar, não simular sucesso nem remover estado local antes da confirmação do servidor.
+
+### [ ] Impressão completa de fechamentos existentes
+- A impressão deve identificar estabelecimento, data, frentista e responsável.
+- Incluir os registros persistidos dos quatro bicos: leituras inicial/final, litros vendidos, preço por litro e valor por bico; incluir recebimentos por modalidade, totais, diferença, resultado e observações.
+- A folha deve ser A4, legível, paginada e sem cortes, sobreposição ou elementos desnecessários da interface; compatível com desktop e Android.
+- Usar os valores gravados sem recalcular ou alterar os registros do fechamento.
+
+### [ ] Exibição confiável dos dados já persistidos
+- Diagnosticar conexão e versão de esquema/tabelas, queries, permissões, filtros, autenticação, mapeamento/serialização, atualização assíncrona e estados de loading/ausência/erro.
+- Após correção autorizada, registros existentes devem aparecer no histórico/detalhe/dashboard e permanecer disponíveis após refresh e novo login.
+- Não criar amostras, duplicar registros, trocar banco, apagar dados ou apresentar falhas como “nenhum registro”/zeros; oferecer retry e informar falhas de forma explícita.
+- Verificar paginação/limites para que registros persistidos mais antigos não sejam silenciosamente omitidos.
+
+### [ ] Preservação de dados e migração segura (pendente)
+- Preservar arquitetura, usuários, senhas, histórico e registros existentes; não limpar tabelas, recriar usuários, duplicar registros nem executar migração destrutiva.
+- Antes de qualquer alteração estrutural, obter backup verificável do banco compartilhado e aplicar somente migração segura/reversível após aprovação explícita; documentar o escopo do DDL.
+- Diagnóstico confirmado: `closures.list` falha porque falta `closures.revision`; `0002_inventory_discrepancies` e `0003_payroll_review_revisions` ainda não constam como aplicadas. Até autorização e migração segura, mostrar erro explícito; nenhuma escrita/migração foi executada.
+
+### [ ] Aceite integrado solicitado
+- Verificar login válido e inválido; logout e revogação; tentativa de voltar; acesso direto a rota protegida sem sessão.
+- Verificar impressão de um fechamento existente, completo e A4.
+- Verificar persistência e exibição após refresh e novo login.
+- Inspecionar responsividade em Android e computador.
+- Manter cada fluxo sem evidência real marcado como pendente; não declarar os quatro problemas corrigidos apenas por build/teste unitário.
+
+### Evidências parciais e bloqueios registrados em 21/11/2026
+- Login inválido com usuário fictício exibiu “Usuário ou senha incorretos.”; o usuário entrou pelo Preview usando uma conta existente. O botão “Entrar” foi verificado visualmente em desktop e viewport móvel de 390 px.
+- O botão Sair foi disparado pelo DOM porque a camada do Preview interceptava o clique visual. O ramo de cancelamento de `window.confirm` manteve a sessão; o ramo afirmativo levou a `/login`, e uma consulta posterior a `auth.me` respondeu HTTP 401 / `UNAUTHORIZED`. O acesso direto a `/historico` sem sessão e Voltar após logout permaneceram no login. Não foram encontrados tokens ou chaves de autenticação em `sessionStorage`/`localStorage`. A exibição nativa da confirmação e a responsividade autenticada em Android físico ainda não foram verificadas.
+- Os testes unitários cobrem conteúdo/escape da ficha A4 e passaram; a impressão de um fechamento real não foi validada porque o detalhe persistido falha pela coluna `closures.revision` ausente. Também permanecem pendentes a exibição dos dados após migração autorizada, refresh e novo login.
+- `pnpm check`, `pnpm test` (27 testes em 7 arquivos), `pnpm build` e `git diff --check` passaram. Build: avisos de chunk grande e script existente no `index.html`, sem falha.
+- As migrações `0002_inventory_discrepancies` e `0003_payroll_review_revisions` continuam pendentes. Nenhuma migração, escrita, exclusão ou inserção foi executada no banco compartilhado; aguardar backup privado verificável e aprovação explícita antes de qualquer DDL.
+- As correções permanecem sem aceite integrado e os itens acima continuam abertos. `publishing.auto_publish=false`; o site não foi publicado.
