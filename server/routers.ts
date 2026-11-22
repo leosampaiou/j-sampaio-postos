@@ -217,9 +217,6 @@ const closureInput = z.object({
   payments: z.array(z.object({ method: paymentSchema, amountCents: z.number().int().min(0).max(100000000) })).length(4),
   participants: z.array(z.object({ employeeId: z.number().int().positive(), sharePercent: z.number().int().min(1).max(100) })).min(1).max(10).optional(),
 }).superRefine((input, ctx) => {
-  if (input.closureId && (!input.changeReason || input.changeReason.length < 5)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["changeReason"], message: "Informe uma justificativa de pelo menos 5 caracteres para corrigir um fechamento existente." });
-  }
   const participants = input.participants ?? [];
   if (!participants.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["participants"], message: "Informe explicitamente os participantes e o rateio antes de salvar." });
   if (new Set(participants.map(person => person.employeeId)).size !== participants.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["participants"], message: "Não repita funcionários no fechamento." });
@@ -289,7 +286,10 @@ const closuresRouter = router({
       db.select({ employeeId: closureParticipants.employeeId, sharePercent: closureParticipants.sharePercent, employeeName: employees.fullName }).from(closureParticipants).innerJoin(employees, eq(closureParticipants.employeeId, employees.id)).where(eq(closureParticipants.closureId, input.id)).orderBy(asc(closureParticipants.employeeId)),
     ]);
     const [unit] = await db.select().from(units).where(eq(units.id, ctx.user.unitId)).limit(1);
-    return { ...row.closure, employeeName: ownEmployeeIds && !ownEmployeeIds.includes(row.closure.employeeId) ? "Fechamento compartilhado" : row.employeeName ?? "Funcionário", nozzles, payments, participants: ownEmployeeIds ? participantRows.filter(person => ownEmployeeIds!.includes(person.employeeId)) : participantRows, unit };
+    const visibleParticipants = !ownEmployeeIds || (row.closure.status === "rascunho" && row.closure.createdBy === ctx.user.id)
+      ? participantRows
+      : participantRows.filter(person => ownEmployeeIds.includes(person.employeeId));
+    return { ...row.closure, employeeName: ownEmployeeIds && !ownEmployeeIds.includes(row.closure.employeeId) ? "Fechamento compartilhado" : row.employeeName ?? "Funcionário", nozzles, payments, participants: visibleParticipants, unit };
   }),
   saveDraft: protectedProcedure.input(closureInput).mutation(async ({ input, ctx }) => {
     const db = await getDb();
@@ -309,8 +309,9 @@ const closuresRouter = router({
       const [found] = await db.select().from(closures).where(and(eq(closures.id, input.closureId), eq(closures.unitId, ctx.user.unitId))).limit(1);
       if (!found) throw new TRPCError({ code: "NOT_FOUND" });
       existing = found;
-      if (existing.status === "finalizado" || existing.status === "aguardando_conferencia") throw new TRPCError({ code: "FORBIDDEN", message: "Fechamento enviado não pode ser alterado sem reabertura autorizada." });
-      if (ctx.user.role === "frentista") throw new TRPCError({ code: "FORBIDDEN", message: "Apenas gerentes e administradores podem corrigir fechamentos existentes." });
+      if (existing.status !== "rascunho" && existing.status !== "reaberto") throw new TRPCError({ code: "FORBIDDEN", message: "Somente rascunhos e fechamentos reabertos podem ser alterados." });
+      if (existing.status === "reaberto" && (!input.changeReason || input.changeReason.trim().length < 5)) throw new TRPCError({ code: "BAD_REQUEST", message: "Informe uma justificativa de pelo menos 5 caracteres para corrigir um fechamento reaberto." });
+      if (ctx.user.role === "frentista" && (existing.status !== "rascunho" || existing.createdBy !== ctx.user.id || employee.linkedUserId !== ctx.user.id)) throw new TRPCError({ code: "FORBIDDEN", message: "Frentistas só podem continuar os próprios rascunhos." });
       [priorNozzles, priorPayments] = await Promise.all([
         db.select().from(closureNozzles).where(eq(closureNozzles.closureId, existing.id)),
         db.select().from(closurePayments).where(eq(closurePayments.closureId, existing.id)),
@@ -346,7 +347,7 @@ const closuresRouter = router({
     if (existingForShift && existingForShift.id !== existing?.id) throw new TRPCError({ code: "CONFLICT", message: "Já existe um fechamento para esta data e turno." });
 
     if (existing) {
-      const changeReason = input.changeReason!;
+      const changeReason = input.changeReason?.trim() ?? "";
       const changes: Array<{ field: string; beforeValue: string; afterValue: string }> = [];
       const recordChange = (field: string, before: unknown, after: unknown) => {
         const beforeValue = JSON.stringify(before ?? null);
@@ -384,7 +385,7 @@ const closuresRouter = router({
         await tx.insert(closureNozzles).values(nozzleValues.map(n => ({ ...n, closureId: existing!.id })));
         await tx.insert(closurePayments).values(input.payments.map(p => ({ ...p, closureId: existing!.id })));
         await tx.insert(closureParticipants).values(participants.map(person => ({ ...person, closureId: existing!.id })));
-        await tx.insert(auditEvents).values(auditRows.map(change => ({ unitId: ctx.user.unitId, userId: ctx.user.id, targetType: "closure", targetId: existing!.id, action: changes.length ? "closure_updated" : "closure_saved", field: change.field || null, beforeValue: change.beforeValue || null, afterValue: change.afterValue || null, reason: changeReason })));
+        await tx.insert(auditEvents).values(auditRows.map(change => ({ unitId: ctx.user.unitId, userId: ctx.user.id, targetType: "closure", targetId: existing!.id, action: changes.length ? "closure_updated" : "closure_saved", field: change.field || null, beforeValue: change.beforeValue || null, afterValue: change.afterValue || null, reason: changeReason || null })));
       });
       return { id: existing.id, salesCents, receivedCents, differenceCents, result };
     }
@@ -407,6 +408,7 @@ const closuresRouter = router({
         .where(and(eq(closures.id, input.id), eq(closures.unitId, ctx.user.unitId))).limit(1).for("update");
       if (!closure) throw new TRPCError({ code: "NOT_FOUND" });
       if (closure.status === "finalizado" || closure.status === "aguardando_conferencia") throw new TRPCError({ code: "CONFLICT", message: "Este fechamento já foi enviado." });
+      if (closure.status !== "rascunho") throw new TRPCError({ code: "CONFLICT", message: "Salve primeiro as alterações do fechamento reaberto antes de finalizar." });
       if (ctx.user.role === "frentista" && closure.createdBy !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN" });
       if (!closure.employeeConfirmed || !closure.responsibleConfirmed) throw new TRPCError({ code: "BAD_REQUEST", message: "Confirme as responsabilidades antes de enviar." });
       const status: "aguardando_conferencia" | "finalizado" = ctx.user.role === "frentista" ? "aguardando_conferencia" : "finalizado";

@@ -47,3 +47,5 @@
 @media(max-width:540px){.query-error-state{align-items:flex-start;flex-wrap:wrap}.query-error-copy{flex-basis:calc(100% - 40px)}.query-error-state .ui-button{margin-left:30px}.auth-submit{min-height:48px!important}}
 
 .query-data-state{padding:18px 10px;color:#778294;font-size:10px;text-align:center;line-height:1.5}
+/* No dashboard, os tanques são apresentados em sequência vertical: gasolina antes do diesel. */
+.dashboard-tank-card-grid{grid-template-columns:minmax(0,1fr)}

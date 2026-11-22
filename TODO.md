@@ -447,6 +447,9 @@ Disponibilizar nesta página:
 - Gerar PDF.
 - Enviar pelo WhatsApp.
 - Solicitar reabertura, conforme permissão.
+- Disponibilizar no Histórico a ação “Continuar rascunho”: gerentes e administradores podem retomar rascunhos da unidade; o frentista só pode retomar o próprio rascunho.
+- Ao retomar um rascunho, permitir salvá-lo novamente como rascunho ou finalizá-lo; o frentista envia para conferência gerencial e gerente/administrador finaliza.
+- Não exigir justificativa para retomar rascunho; manter justificativa obrigatória para corrigir fechamento reaberto.
 - Consultar histórico de alterações.
 
 ---
