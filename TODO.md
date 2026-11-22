@@ -1076,3 +1076,9 @@ Preparar a estrutura para permitir:
 - `pnpm check`, `pnpm test` (27 testes em 7 arquivos), `pnpm build` e `git diff --check` passaram. Build: avisos de chunk grande e script existente no `index.html`, sem falha.
 - As migrações `0002_inventory_discrepancies` e `0003_payroll_review_revisions` continuam pendentes. Nenhuma migração, escrita, exclusão ou inserção foi executada no banco compartilhado; aguardar backup privado verificável e aprovação explícita antes de qualquer DDL.
 - As correções permanecem sem aceite integrado e os itens acima continuam abertos. `publishing.auto_publish=false`; o site não foi publicado.
+
+
+## [x] Acessibilidade tipográfica e escala de texto
+- A tipografia deve usar unidades relativas e permitir que o navegador/dispositivo aplique a preferência de tamanho de texto do usuário; não bloquear zoom nem ajuste automático de texto.
+- Em telas móveis, aumentar a legibilidade mantendo conteúdo expansível, com quebra de linhas e sem cortes em botões, campos, navegação ou cards.
+- A preferência de tamanho deve propagar-se por todas as páginas do app, não apenas pelo dashboard.
